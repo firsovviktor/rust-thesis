@@ -6,5 +6,9 @@ edition = "2021"
 [dependencies]
 
 tokio = { version = "1", features = ["full"] }
+num-complex = "0.4"
 
 
+[profile.flamegraph-release]
+inherits = "release"
+debug=true

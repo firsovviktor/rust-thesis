@@ -1,18 +1,41 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use tokio::runtime::Builder;
 
-const NUM_THREADS: usize = 2;
+const NUM_THREADS: usize = 1;
+
+struct ArgsForBlack {
+    pub left: usize,
+    pub right: usize,
+    pub len: usize,
+    pub black: *const f64,
+    pub red: *const f64,
+    pub out_black: *mut f64,
+}
+unsafe impl Send for ArgsForBlack {}
+
+struct ArgsForRed {
+    pub left: usize,
+    pub right: usize,
+    pub len: usize,
+    pub black: *const f64,
+    pub red: *const f64,
+    pub out_red: *mut f64,
+}
+
+unsafe impl Send for ArgsForRed {}
 
 #[derive(Default)]
 struct Solution {
     black: Vec<f64>,
     red: Vec<f64>,
+    new_black: Vec<f64>,
+    new_red: Vec<f64>,
 }
 
 impl Solution {
     fn new_black(idx: usize, total_size: usize, prev_black: f64, prev_red: f64) -> f64 {
-        prev_black + prev_red
+        prev_black + prev_red % 2.
     }
 
     fn new_red(
@@ -26,124 +49,110 @@ impl Solution {
         // let total = black_left.unwrap_or(0.) + black_center + black_right.unwrap_or(0.);
         // let total = black_left.unwrap() + black_center + black_right.unwrap();
 
-        black_center + prev_red
+        prev_red + black_center % 2.
     }
 
-    async fn calculate_black(
-        left: usize,
-        right: usize,
-        black: Arc<Vec<f64>>,
-        red: Arc<Vec<f64>>,
-        out_black: Arc<Vec<f64>>,
-    ) {
-        for i in left..right {
+    async fn calculate_black(args: ArgsForBlack) {
+        for i in args.left..args.right {
             unsafe {
                 // Get a mutable pointer to the vector's data
-                let ptr = out_black.as_ptr() as *mut f64;
                 // Increment the value at the calculated index
-                *ptr.add(i) = Self::new_black(i, black.len(), black[i], red[i])
+                *args.out_black.add(i) =
+                    Self::new_black(i, args.len, *args.black.add(i), *args.red.add(i))
             }
         }
     }
 
-    async fn calculate_red(
-        left: usize,
-        right: usize,
-        black: Arc<Vec<f64>>,
-        red: Arc<Vec<f64>>,
-        out_red: Arc<Vec<f64>>,
-    ) {
-        for i in left..right {
+    async fn calculate_red(args: ArgsForRed) {
+        for i in args.left..args.right {
             unsafe {
                 // Get a mutable pointer to the vector's data
-                let ptr = out_red.as_ptr() as *mut f64;
                 // Increment the value at the calculated index
-                *ptr.add(i) = Self::new_red(
+                *args.out_red.add(i) = Self::new_red(
                     i,
-                    red.len(),
+                    args.len,
                     if i > 0 {
-                        black.get(i - 1).copied()
+                        Some(*args.black.add(i - 1))
                     } else {
                         None
                     },
-                    black[i],
-                    black.get(i + 1).copied(),
-                    red[i],
+                    *args.black.add(i),
+                    if i < args.len - 1 {
+                        Some(*args.black.add(i + 1))
+                    } else {
+                        None
+                    },
+                    *args.red.add(i),
                 );
             }
         }
     }
 
-    async fn step(
-        &self,
-        black: Arc<Vec<f64>>,
-        red: Arc<Vec<f64>>,
-    ) -> (Arc<Vec<f64>>, Arc<Vec<f64>>) {
-        let mut black_vec = Vec::new();
-        black_vec.resize(black.len(), 0.);
-
-        let mut new_black = Arc::new(black_vec);
-
+    async fn step(&mut self) {
         let mut tasks = Vec::new();
         for i in 0..NUM_THREADS {
-            let left = i * black.len() / NUM_THREADS;
-            let right = (i + 1) * black.len() / NUM_THREADS;
+            let left = i * self.black.len() / NUM_THREADS;
+            let right = ((i + 1) * self.black.len() / NUM_THREADS).min(self.black.len());
 
-            tasks.push(tokio::spawn(Self::calculate_black(
+            tasks.push(tokio::spawn(Self::calculate_black(ArgsForBlack {
                 left,
                 right,
-                black.clone(),
-                red.clone(),
-                new_black.clone(),
-            )));
+                len: self.black.len(),
+                black: self.black.as_ptr(),
+                red: self.red.as_ptr(),
+                out_black: self.new_black.as_ptr() as *mut f64,
+            })));
         }
 
         for task in tasks {
             task.await.unwrap();
         }
 
-        let mut red_vec = Vec::new();
-        red_vec.resize(red.len(), 0.);
-
-        let mut new_red = Arc::new(red_vec);
-
         let mut tasks = Vec::new();
 
         for i in 0..NUM_THREADS {
-            let left = i * red.len() / NUM_THREADS;
-            let right = (i + 1) * red.len() / NUM_THREADS;
+            let left = i * self.red.len() / NUM_THREADS;
+            let right = ((i + 1) * self.red.len() / NUM_THREADS).min(self.red.len());
 
-            tasks.push(tokio::spawn(Self::calculate_red(
+            tasks.push(tokio::spawn(Self::calculate_red(ArgsForRed {
                 left,
                 right,
-                black.clone(),
-                red.clone(),
-                new_red.clone(),
-            )));
+                len: self.red.len(),
+                black: self.black.as_ptr(),
+                red: self.red.as_ptr(),
+                out_red: self.new_red.as_ptr() as *mut f64,
+            })));
         }
 
         for task in tasks {
             task.await.unwrap();
         }
 
-        (new_black, new_red)
+        std::mem::swap(&mut self.black, &mut self.new_black);
+        std::mem::swap(&mut self.red, &mut self.new_red);
     }
 
-    async fn calculate(&self) {
-        let mut black = Arc::new(vec![1., 1., 1., 1., 1., 1., 1.]);
-        let mut red = Arc::new(vec![1., 1., 1., 1., 1., 1., 1.]);
+    async fn calculate(&mut self) {
+        let t = Instant::now();
 
-        for _ in 0..10 {
-            let (new_black, new_red) = self.step(black, red).await;
-            black = new_black;
-            red = new_red;
+        self.black = vec![1.; 100_000];
+        self.red = vec![1.; 100_000];
+        self.new_black.resize(self.black.len(), 0.);
+        self.new_red.resize(self.red.len(), 0.);
+
+        for _ in 0..100000 {
+            self.step().await;
         }
 
-        println!("{:?}", black);
-        println!("{:?}", red);
+        // println!("{:?}", self.black);
+        // println!("{:?}", self.red);
         // println!("{}", black[0]);
+
+        println!("Elapsed: {}s", t.elapsed().as_secs_f64());
     }
 }
+
+unsafe impl Send for Solution {}
 
 fn main() {
     let runtime = Builder::new_multi_thread()
@@ -152,7 +161,7 @@ fn main() {
         .build()
         .unwrap();
 
-    let solution = Solution::default();
+    let mut solution = Solution::default();
 
     runtime.block_on(solution.calculate());
 }
