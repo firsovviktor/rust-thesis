@@ -1,8 +1,11 @@
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use tokio::runtime::Builder;
 
-const NUM_THREADS: usize = 1;
+const NUM_THREADS: usize = 4;
 
 struct ArgsForBlack {
     pub left: usize,
@@ -157,7 +160,7 @@ unsafe impl Send for Solution {}
 fn main() {
     let runtime = Builder::new_multi_thread()
         .worker_threads(NUM_THREADS)
-        .enable_all()
+        .thread_keep_alive(Duration::from_secs(5))
         .build()
         .unwrap();
 

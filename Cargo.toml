@@ -12,3 +12,8 @@ num-complex = "0.4"
 [profile.flamegraph-release]
 inherits = "release"
 debug=true
+
+[profile.release-optimized]
+inherits = "release" 
+lto="fat"
+codegen-units=1
