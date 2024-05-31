@@ -5,105 +5,235 @@ use std::{
 
 use tokio::runtime::Builder;
 
-const NUM_THREADS: usize = 4;
+use num_complex::Complex;
 
-struct ArgsForBlack {
+const NUM_THREADS: usize = 2;
+
+#[derive(Copy, Clone)]
+struct Parameters {
+    pub Nr: usize,
+    pub Nt: usize,
+
+    pub R0: f64,
+    pub Lr: f64,
+    pub T0: f64,
+    pub Lt: f64,
+
+    pub Mass: f64,
+    pub Lambda: f64,
+    pub Dimensions: f64,
+
+    pub alpha: f64,
+
+    pub r1: f64,
+    pub a1: f64,
+    pub r2: f64,
+    pub a2: f64,
+    pub k: f64,
+
+    pub ampl: f64,
+
+    pub dr: f64,
+    pub dt: f64,
+}
+
+struct ArgsForField {
     pub left: usize,
     pub right: usize,
-    pub len: usize,
-    pub black: *const f64,
-    pub red: *const f64,
-    pub out_black: *mut f64,
+    pub field: *const Complex<f64>,
+    pub impulse: *const Complex<f64>,
+    pub out_field: *mut Complex<f64>,
+    pub params: *const Parameters,
 }
-unsafe impl Send for ArgsForBlack {}
+unsafe impl Send for ArgsForField {}
 
-struct ArgsForRed {
+struct ArgsForImpulse {
     pub left: usize,
     pub right: usize,
-    pub len: usize,
-    pub black: *const f64,
-    pub red: *const f64,
-    pub out_red: *mut f64,
+    pub field: *const Complex<f64>,
+    pub impulse: *const Complex<f64>,
+    pub out_impulse: *mut Complex<f64>,
+    pub params: *const Parameters,
 }
+unsafe impl Send for ArgsForImpulse {}
 
-unsafe impl Send for ArgsForRed {}
-
-#[derive(Default)]
 struct Solution {
-    black: Vec<f64>,
-    red: Vec<f64>,
-    new_black: Vec<f64>,
-    new_red: Vec<f64>,
+    field: Vec<Complex<f64>>,
+    next_field: Vec<Complex<f64>>,
+
+    impulse: Vec<Complex<f64>>,
+    next_impulse: Vec<Complex<f64>>,
+
+    params: Parameters,
 }
 
 impl Solution {
-    fn new_black(idx: usize, total_size: usize, prev_black: f64, prev_red: f64) -> f64 {
-        prev_black + prev_red % 2.
+    // constructor
+    pub fn new(params: Parameters) -> Self {
+        let field = vec![Complex::new(0.0, 0.0); params.Nr];
+        let impulse = vec![Complex::new(0.0, 0.0); params.Nr];
+        let (next_field, next_impulse) = Solution::initialize_conditions(&params);
+        Solution {
+            field,
+            next_field,
+            impulse,
+            next_impulse,
+            params,
+        }
     }
 
-    fn new_red(
-        idx: usize,
-        total_size: usize,
-        black_left: Option<f64>,
-        black_center: f64,
-        black_right: Option<f64>,
-        prev_red: f64,
-    ) -> f64 {
-        // let total = black_left.unwrap_or(0.) + black_center + black_right.unwrap_or(0.);
-        // let total = black_left.unwrap() + black_center + black_right.unwrap();
+    // function initializes field and impulse at the strating time
+    fn initialize_conditions(params: &Parameters) -> (Vec<Complex<f64>>, Vec<Complex<f64>>) {
+        let mut field = vec![Complex::new(0.0, 0.0); params.Nr];
+        let mut impulse = vec![Complex::new(0.0, 0.0); params.Nr];
 
-        prev_red + black_center % 2.
+        let mut r: f64;
+        for i in 0..params.Nr {
+            r = params.R0 + params.dr * i as f64 + params.T0;
+            field[i] = Complex::i() * params.alpha * params.ampl * f64::cos(params.k * r)
+                + params.ampl * f64::sin(params.k * r);
+            field[i] /= 1.0 + f64::exp(-params.a1 * (r - params.r1));
+            field[i] /= 1.0 + f64::exp(-params.a2 * (params.r2 - r));
+            if i > 0 {
+                field[i] /= f64::powf(params.dr * i as f64, (params.Dimensions - 1.0) / 2.0);
+            }
+        }
+
+        let mut pi1: Complex<f64>;
+        let mut pi2: Complex<f64>;
+        let mut pi3: Complex<f64>;
+
+        for i in 0..params.Nr {
+            r = params.R0 + params.dr * i as f64 + params.T0 + params.dt / 2.0;
+
+            pi1 = (Complex::i() * params.alpha * params.ampl * f64::cos(params.k * r)
+                + params.ampl * f64::sin(params.k * r))
+                * params.a1;
+            pi1 *= f64::exp(-params.a1 * (r - params.r1));
+            pi1 /= f64::powf(1.0 + f64::exp(-params.a1 * (r - params.r1)), 2.0);
+            pi1 /= 1.0 + f64::exp(-params.a2 * (params.r2 - r));
+
+            pi2 = -(Complex::i() * params.alpha * params.ampl * f64::cos(params.k * r)
+                + params.ampl * f64::sin(params.k * r))
+                * params.a2;
+            pi2 *= f64::exp(-params.a2 * (params.r2 - r));
+            pi2 /= 1.0 + f64::exp(-params.a1 * (r - params.r1));
+            pi2 /= f64::powf(1.0 + f64::exp(-params.a2 * (params.r2 - r)), 2.0);
+
+            pi3 = -Complex::i() * params.alpha * params.ampl * params.k * f64::sin(params.k * r)
+                + params.ampl * params.k * f64::cos(params.k * r);
+            pi3 /= 1.0 + f64::exp(-params.a1 * (r - params.r1));
+            pi3 /= 1.0 + f64::exp(-params.a2 * (params.r2 - r));
+
+            impulse[i] = pi1 + pi2 + pi3;
+            if i > 0 {
+                impulse[i] /= f64::powf(params.dr * i as f64, (params.Dimensions - 1.0) / 2.0);
+            }
+        }
+        (field, impulse)
     }
 
-    async fn calculate_black(args: ArgsForBlack) {
+    // function calculates next field value
+    fn new_field(field: Complex<f64>, impulse: Complex<f64>, params: &Parameters) -> Complex<f64> {
+        field + impulse * params.dt
+    }
+
+    // function calculates next impulse value
+    fn new_impulse(
+        index: usize,
+        field_left: Option<Complex<f64>>,
+        field_center: Complex<f64>,
+        field_right: Option<Complex<f64>>,
+        impulse: Complex<f64>,
+        params: &Parameters,
+    ) -> Complex<f64> {
+        let field_left = field_left.unwrap_or(Complex::new(0.0, 0.0));
+        let field_right = field_right.unwrap_or(Complex::new(0.0, 0.0));
+
+        let mut out_impulse: Complex<f64>;
+        let field_pp: Complex<f64>;
+        let field_p: Complex<f64>;
+
+        if index == 0 {
+            field_pp = 2.0 * (field_right - field_center) / f64::powf(params.dr, 2.0);
+            out_impulse = impulse;
+            out_impulse +=
+                (params.Dimensions * field_pp - f64::powf(params.Mass, 2.0)) * field_center;
+            out_impulse -= params.Lambda * field_center.powc(Complex::new(3.0, 0.0));
+        } else if index == params.Nr - 1 {
+            field_pp = 2.0 * (field_left - field_center) / f64::powf(params.dr, 2.0);
+            out_impulse = impulse;
+            out_impulse += (field_pp - f64::powf(params.Mass, 2.0)) * field_center;
+            out_impulse -= params.Lambda * field_center.powc(Complex::new(3.0, 0.0));
+        } else {
+            field_pp = (field_right - 2.0 * field_center + field_left) / f64::powf(params.dr, 2.0);
+            field_p = (field_right - field_left) / 2.0 / params.dr;
+            out_impulse = impulse;
+            out_impulse += (field_pp
+                + (params.Dimensions - 1.0) * field_p / (params.R0 + (index as f64) * params.dr)
+                - f64::powf(params.Mass, 2.0))
+                * field_center;
+            out_impulse -= params.Lambda * field_center.powc(Complex::new(3.0, 0.0));
+        }
+        out_impulse
+    }
+
+    // function calculates next field row
+    async fn calculate_field(args: ArgsForField) {
         for i in args.left..args.right {
             unsafe {
                 // Get a mutable pointer to the vector's data
                 // Increment the value at the calculated index
-                *args.out_black.add(i) =
-                    Self::new_black(i, args.len, *args.black.add(i), *args.red.add(i))
+                *args.out_field.add(i) = Self::new_field(
+                    *args.field.add(i),
+                    *args.impulse.add(i),
+                    args.params.as_ref().unwrap(),
+                )
             }
         }
     }
 
-    async fn calculate_red(args: ArgsForRed) {
+    // function calculates next impulse row
+    async fn calculate_impulse(args: ArgsForImpulse) {
         for i in args.left..args.right {
             unsafe {
+                let params = args.params.as_ref().unwrap();
                 // Get a mutable pointer to the vector's data
                 // Increment the value at the calculated index
-                *args.out_red.add(i) = Self::new_red(
+                *args.out_impulse.add(i) = Self::new_impulse(
                     i,
-                    args.len,
                     if i > 0 {
-                        Some(*args.black.add(i - 1))
+                        Some(*args.field.add(i - 1))
                     } else {
                         None
                     },
-                    *args.black.add(i),
-                    if i < args.len - 1 {
-                        Some(*args.black.add(i + 1))
+                    *args.field.add(i),
+                    if i < params.Nr - 1 {
+                        Some(*args.field.add(i + 1))
                     } else {
                         None
                     },
-                    *args.red.add(i),
+                    *args.impulse.add(i),
+                    params,
                 );
             }
         }
     }
 
+    // function does one time step, returns vectors of new impulse and field rows
     async fn step(&mut self) {
         let mut tasks = Vec::new();
         for i in 0..NUM_THREADS {
-            let left = i * self.black.len() / NUM_THREADS;
-            let right = ((i + 1) * self.black.len() / NUM_THREADS).min(self.black.len());
+            let left = i * self.params.Nr / NUM_THREADS;
+            let right = ((i + 1) * self.params.Nr / NUM_THREADS).min(self.params.Nr);
 
-            tasks.push(tokio::spawn(Self::calculate_black(ArgsForBlack {
+            tasks.push(tokio::spawn(Self::calculate_field(ArgsForField {
                 left,
                 right,
-                len: self.black.len(),
-                black: self.black.as_ptr(),
-                red: self.red.as_ptr(),
-                out_black: self.new_black.as_ptr() as *mut f64,
+                field: self.field.as_ptr(),
+                impulse: self.impulse.as_ptr(),
+                out_field: self.next_field.as_ptr() as *mut Complex<f64>,
+                params: &self.params as *const Parameters,
             })));
         }
 
@@ -114,16 +244,16 @@ impl Solution {
         let mut tasks = Vec::new();
 
         for i in 0..NUM_THREADS {
-            let left = i * self.red.len() / NUM_THREADS;
-            let right = ((i + 1) * self.red.len() / NUM_THREADS).min(self.red.len());
+            let left = i * self.params.Nr / NUM_THREADS;
+            let right = ((i + 1) * self.params.Nr / NUM_THREADS).min(self.params.Nr);
 
-            tasks.push(tokio::spawn(Self::calculate_red(ArgsForRed {
+            tasks.push(tokio::spawn(Self::calculate_impulse(ArgsForImpulse {
                 left,
                 right,
-                len: self.red.len(),
-                black: self.black.as_ptr(),
-                red: self.red.as_ptr(),
-                out_red: self.new_red.as_ptr() as *mut f64,
+                field: self.field.as_ptr(),
+                impulse: self.impulse.as_ptr(),
+                out_impulse: self.next_impulse.as_ptr() as *mut Complex<f64>,
+                params: &self.params as *const Parameters,
             })));
         }
 
@@ -131,30 +261,26 @@ impl Solution {
             task.await.unwrap();
         }
 
-        std::mem::swap(&mut self.black, &mut self.new_black);
-        std::mem::swap(&mut self.red, &mut self.new_red);
+        std::mem::swap(&mut self.field, &mut self.next_field);
+        std::mem::swap(&mut self.impulse, &mut self.next_impulse);
     }
 
+    // function repeatedly calucaltes new rows and stores them in place of the old ones
+    // also gives opprtunity to caltucalte signatures and store values
     async fn calculate(&mut self) {
         let t = Instant::now();
 
-        self.black = vec![1.; 100_000];
-        self.red = vec![1.; 100_000];
-        self.new_black.resize(self.black.len(), 0.);
-        self.new_red.resize(self.red.len(), 0.);
-
-        for _ in 0..100000 {
+        for _ in 0..self.params.Nt {
             self.step().await;
         }
 
-        // println!("{:?}", self.black);
-        // println!("{:?}", self.red);
-        // println!("{}", black[0]);
+        // println!("{:?}", self.field);
+        // println!("{:?}", self.impulse);
+        // println!("{}", field[0]);
 
         println!("Elapsed: {}s", t.elapsed().as_secs_f64());
     }
 }
-
 unsafe impl Send for Solution {}
 
 fn main() {
@@ -164,7 +290,36 @@ fn main() {
         .build()
         .unwrap();
 
-    let mut solution = Solution::default();
+    let mut params = Parameters {
+        Nr: 11,
+        Nt: 41,
+
+        R0: 0.0, //change boundary conditions for non-zero R0
+        Lr: 4.0,
+        T0: 0.0,
+        Lt: 8.0,
+
+        Mass: 1.0,
+        Lambda: 1.0,
+        Dimensions: 1.0,
+
+        alpha: 0.1,
+
+        r1: 1.5,
+        a1: 10.0,
+        r2: 2.1,
+        a2: 10.0,
+        k: 2.0 * std::f64::consts::PI / 0.2,
+
+        ampl: 1.0,
+
+        dr: 0.0,
+        dt: 0.0,
+    };
+    params.dr = (params.Lr - params.R0) / (params.Nr as f64 - 1.0);
+    params.dt = (params.Lt - params.T0) / (params.Nt as f64 - 1.0);
+
+    let mut solution = Solution::new(params);
 
     runtime.block_on(solution.calculate());
 }
