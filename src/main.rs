@@ -12,6 +12,7 @@ use tokio::{
 };
 
 use num_complex::Complex;
+use statrs::statistics::Statistics;
 
 const EXP_THREADS_SPLIT: usize = 6;
 const GLOBAL_NUM_THREADS: usize = 15;
@@ -64,12 +65,38 @@ struct ArgsForImpulse {
 }
 unsafe impl Send for ArgsForImpulse {}
 
+struct ArgsForNonLinearity {
+    pub left: usize,
+    pub right: usize,
+    pub field: *const Complex<f64>,
+    pub params: *const Parameters,
+}
+unsafe impl Send for ArgsForNonLinearity {}
+
+struct ArgsForEnergy {
+    pub left: usize,
+    pub right: usize,
+    pub field: *const Complex<f64>,
+    pub impulse: *const Complex<f64>,
+    pub next_field: *const Complex<f64>,
+    pub params: *const Parameters,
+}
+unsafe impl Send for ArgsForEnergy {}
+
+struct Physics {
+    pub Action: Complex<f64>,
+    pub Energy: Vec<Complex<f64>>,
+}
+unsafe impl Send for Physics {}
+
 struct Solution {
     field: Vec<Complex<f64>>,
     next_field: Vec<Complex<f64>>,
 
     impulse: Vec<Complex<f64>>,
     next_impulse: Vec<Complex<f64>>,
+
+    physics: Physics,
 
     params: Parameters,
     sender: Sender<DumpElement>,
@@ -81,11 +108,16 @@ impl Solution {
         let next_field = vec![Complex::new(0.0, 0.0); params.Nr];
         let next_impulse = vec![Complex::new(0.0, 0.0); params.Nr];
         let (field, impulse) = Solution::initialize_conditions(&params);
+        let physics = Physics {
+            Action: Complex::new(0.0, 0.0),
+            Energy: vec![Complex::new(0.0, 0.0); params.Nt],
+        };
         Solution {
             field,
             next_field,
             impulse,
             next_impulse,
+            physics,
             params,
             sender,
         }
@@ -193,6 +225,84 @@ impl Solution {
         out_impulse
     }
 
+    // function calculates non-linearity at given spatial index
+    fn new_NonLinearity(index: usize, field: Complex<f64>, params: &Parameters) -> Complex<f64> {
+        if index == 0 || index == params.Nr - 1 {
+            return params.Lambda * field.powc(Complex::new(4.0, 0.0)) * params.dr / 2.0
+                * (params.R0 + (index as f64) * params.dr).powf(params.Dimensions - 1.0);
+        } else {
+            return params.Lambda
+                * field.powc(Complex::new(4.0, 0.0))
+                * params.dr
+                * (params.R0 + (index as f64) * params.dr).powf(params.Dimensions - 1.0);
+        }
+    }
+
+    // function calculates energy density at given spatial index
+    fn new_Energy(
+        index: usize,
+        field: Complex<f64>,
+        field_right: Option<Complex<f64>>,
+        next_field: Complex<f64>,
+        next_field_right: Option<Complex<f64>>,
+        impulse: Complex<f64>,
+        params: &Parameters,
+    ) -> Complex<f64> {
+        let mut out_Energy: Complex<f64>;
+        out_Energy = Complex::new(0.0, 0.0);
+
+        let field_right = field_right.unwrap_or(Complex::new(0.0, 0.0));
+        let next_field_right = next_field_right.unwrap_or(Complex::new(0.0, 0.0));
+
+        if index == 0 || index == params.Nr - 1 {
+            out_Energy += (0.5 * Complex::<f64>::powc(impulse, Complex::new(2.0, 0.0))
+                + 0.5
+                    * f64::powf(params.Mass, 2.0)
+                    * Complex::<f64>::powc(field + next_field, Complex::new(2.0, 0.0))
+                    / 4.0
+                + 0.25
+                    * params.Lambda
+                    * Complex::<f64>::powc(field + next_field, Complex::new(4.0, 0.0))
+                    / 16.0)
+                * params.dr
+                / 2.0
+                * f64::powf(
+                    params.R0 + (index as f64) * params.dr,
+                    params.Dimensions - 1.0,
+                );
+        } else {
+            out_Energy += (0.5 * Complex::<f64>::powc(impulse, Complex::new(2.0, 0.0))
+                + 0.5
+                    * f64::powf(params.Mass, 2.0)
+                    * Complex::<f64>::powc(field + next_field, Complex::new(2.0, 0.0))
+                    / 4.0
+                + 0.25
+                    * params.Lambda
+                    * Complex::<f64>::powc(field + next_field, Complex::new(4.0, 0.0))
+                    / 16.0)
+                * params.dr
+                * f64::powf(
+                    params.R0 + (index as f64) * params.dr,
+                    params.Dimensions - 1.0,
+                );
+        }
+
+        if index != params.Nr - 1 {
+            out_Energy += (Complex::<f64>::powc(field_right - field, Complex::new(2.0, 0.0))
+                / 4.0
+                / params.dr
+                + Complex::<f64>::powc(next_field_right - next_field, Complex::new(2.0, 0.0))
+                    / 4.0
+                    / params.dr)
+                * f64::powf(
+                    params.R0 + (index as f64) * params.dr + params.dr / 2.0,
+                    params.Dimensions - 1.0,
+                );
+        }
+
+        out_Energy
+    }
+
     // function calculates next field row
     async fn calculate_field(args: ArgsForField) {
         for i in args.left..args.right {
@@ -235,8 +345,52 @@ impl Solution {
         }
     }
 
+    // function calculates non-linearity for the current field row
+    async fn calculate_NonLinearity(args: ArgsForNonLinearity) -> Complex<f64> {
+        let mut res: Complex<f64>;
+        res = Complex::new(0.0, 0.0);
+
+        for i in args.left..args.right {
+            unsafe {
+                let params = args.params.as_ref().unwrap();
+                res += Self::new_NonLinearity(i, *args.field.add(i), params);
+            }
+        }
+        res
+    }
+
+    // function calculates energy for the current field row
+    async fn calculate_Energy(args: ArgsForEnergy) -> Complex<f64> {
+        let mut res: Complex<f64>;
+        res = Complex::new(0.0, 0.0);
+
+        for i in args.left..args.right {
+            unsafe {
+                let params = args.params.as_ref().unwrap();
+                res += Self::new_Energy(
+                    i,
+                    *args.field.add(i),
+                    if i < params.Nr - 1 {
+                        Some(*args.field.add(i + 1))
+                    } else {
+                        None
+                    },
+                    *args.next_field.add(i),
+                    if i < params.Nr - 1 {
+                        Some(*args.next_field.add(i + 1))
+                    } else {
+                        None
+                    },
+                    *args.impulse.add(i),
+                    params,
+                );
+            }
+        }
+        res
+    }
+
     // function does one time step, returns vectors of new impulse and field rows
-    async fn step(&mut self) {
+    async fn step(&mut self, time_index: usize) {
         let mut tasks = Vec::new();
         for i in 0..EXP_THREADS_SPLIT {
             let left = i * self.params.Nr / EXP_THREADS_SPLIT;
@@ -257,7 +411,6 @@ impl Solution {
         }
 
         let mut tasks = Vec::new();
-
         for i in 0..EXP_THREADS_SPLIT {
             let left = i * self.params.Nr / EXP_THREADS_SPLIT;
             let right = ((i + 1) * self.params.Nr / EXP_THREADS_SPLIT).min(self.params.Nr);
@@ -276,6 +429,60 @@ impl Solution {
             task.await.unwrap();
         }
 
+        let mut NonLinearity: Complex<f64>;
+        NonLinearity = Complex::new(0.0, 0.0);
+
+        let mut tasks = Vec::new();
+        for i in 0..EXP_THREADS_SPLIT {
+            let left = i * self.params.Nr / EXP_THREADS_SPLIT;
+            let right = ((i + 1) * self.params.Nr / EXP_THREADS_SPLIT).min(self.params.Nr);
+
+            tasks.push(tokio::spawn(Self::calculate_NonLinearity(
+                ArgsForNonLinearity {
+                    left,
+                    right,
+                    field: self.field.as_ptr(),
+                    params: &self.params as *const Parameters,
+                },
+            )));
+        }
+
+        for task in tasks {
+            let result = task.await.unwrap();
+            NonLinearity += result;
+        }
+
+        //Extra division by 2 is caused by Im S ~ 1/2 Nl ~ 1/2 \int \lambda field^4
+        if time_index == 0 || time_index == self.params.Nt - 1 {
+            self.physics.Action += NonLinearity / 4.0 * self.params.dt;
+        } else {
+            self.physics.Action += NonLinearity / 2.0 * self.params.dt;
+        }
+
+        let mut current_energy: Complex<f64>;
+        current_energy = Complex::new(0.0, 0.0);
+
+        let mut tasks = Vec::new();
+        for i in 0..EXP_THREADS_SPLIT {
+            let left = i * self.params.Nr / EXP_THREADS_SPLIT;
+            let right = ((i + 1) * self.params.Nr / EXP_THREADS_SPLIT).min(self.params.Nr);
+
+            tasks.push(tokio::spawn(Self::calculate_Energy(ArgsForEnergy {
+                left,
+                right,
+                field: self.field.as_ptr(),
+                impulse: self.impulse.as_ptr(),
+                next_field: self.next_field.as_ptr(),
+                params: &self.params as *const Parameters,
+            })));
+        }
+
+        for task in tasks {
+            let result = task.await.unwrap();
+            current_energy += result;
+        }
+        self.physics.Energy[time_index] = current_energy;
+
         std::mem::swap(&mut self.field, &mut self.next_field);
         std::mem::swap(&mut self.impulse, &mut self.next_impulse);
     }
@@ -291,13 +498,27 @@ impl Solution {
             //if i % 1000 == 0 {
             //    println!("step {}", i);
             //}
-            self.step().await;
+            self.step(i).await;
         }
+
+        let mean_energy = Complex::new(
+            self.physics.Energy.iter().map(|c| c.re).mean(),
+            self.physics.Energy.iter().map(|c| c.im).mean(),
+        );
 
         self.sender
             .send(DumpElement {
-                task_id: self.params.Nr,
-                number: self.field[0],
+                task_id: self.params.Nr.to_string(),
+                Action: self.physics.Action,
+                Energy: mean_energy,
+                Energy_std: (self
+                    .physics
+                    .Energy
+                    .iter()
+                    .map(|c| (c.re - mean_energy.re).powf(2.0) + (c.im - mean_energy.im).powf(2.0))
+                    .sum::<f64>()
+                    / (self.physics.Energy.len() as f64 - 1.0))
+                    .powf(0.5),
                 terminate: false,
             })
             .await
@@ -317,15 +538,19 @@ fn build_solution(mut params: Parameters, sender: Sender<DumpElement>) -> Soluti
 }
 
 struct DumpElement {
-    task_id: usize,
-    number: Complex<f64>,
+    task_id: String,
+    Action: Complex<f64>,
+    Energy: Complex<f64>,
+    Energy_std: f64,
     terminate: bool,
 }
 impl DumpElement {
     fn terminate() -> Self {
         Self {
-            task_id: 0,
-            number: Complex::i(),
+            task_id: "0".to_string(),
+            Action: Complex::i(),
+            Energy: Complex::i(),
+            Energy_std: 0.0,
             terminate: true,
         }
     }
@@ -341,8 +566,8 @@ async fn info_writer(mut receiver: Receiver<DumpElement>) {
 
         writeln!(
             &mut output_file,
-            "task_id: {}, number: {}",
-            info.task_id, info.number
+            "task_id: {}, Action: {}, Energy: {}, Energy_std: {}",
+            info.task_id, info.Action, info.Energy, info.Energy_std
         )
         .unwrap();
     }
@@ -383,7 +608,7 @@ fn main() {
 
     let (sender, receiver) = tokio::sync::mpsc::channel(10000);
 
-    for i in 1..10u32 {
+    for i in 1..7u32 {
         params.push(params[0]);
         params[i as usize].Nr = (params[0].Nr - 1) * usize::pow(2, i) + 1;
         params[i as usize].Nt = (params[0].Nt - 1) * usize::pow(2, i) + 1;
