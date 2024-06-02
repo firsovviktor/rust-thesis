@@ -14,8 +14,9 @@ use tokio::{
 use num_complex::Complex;
 use statrs::statistics::Statistics;
 
-const EXP_THREADS_SPLIT: usize = 6;
-const GLOBAL_NUM_THREADS: usize = 15;
+const GLOBAL_NUM_THREADS: usize = 16;
+const EXP_THREADS_SPLIT: usize = 4;
+const EXP_ENERGY_THREADS_SPLIT: usize = 16;
 
 #[derive(Copy, Clone)]
 struct Parameters {
@@ -43,6 +44,8 @@ struct Parameters {
 
     pub dr: f64,
     pub dt: f64,
+
+    pub energy_pulling_frequency: usize,
 }
 
 struct ArgsForField {
@@ -110,7 +113,7 @@ impl Solution {
         let (field, impulse) = Solution::initialize_conditions(&params);
         let physics = Physics {
             Action: Complex::new(0.0, 0.0),
-            Energy: vec![Complex::new(0.0, 0.0); params.Nt],
+            Energy: vec![],
         };
         Solution {
             field,
@@ -458,31 +461,32 @@ impl Solution {
         } else {
             self.physics.Action += NonLinearity / 2.0 * self.params.dt;
         }
+        if time_index % self.params.energy_pulling_frequency == 0 {
+            let mut current_energy: Complex<f64>;
+            current_energy = Complex::new(0.0, 0.0);
 
-        let mut current_energy: Complex<f64>;
-        current_energy = Complex::new(0.0, 0.0);
+            let mut tasks = Vec::new();
+            for i in 0..EXP_ENERGY_THREADS_SPLIT {
+                let left = i * self.params.Nr / EXP_ENERGY_THREADS_SPLIT;
+                let right =
+                    ((i + 1) * self.params.Nr / EXP_ENERGY_THREADS_SPLIT).min(self.params.Nr);
 
-        let mut tasks = Vec::new();
-        for i in 0..EXP_THREADS_SPLIT {
-            let left = i * self.params.Nr / EXP_THREADS_SPLIT;
-            let right = ((i + 1) * self.params.Nr / EXP_THREADS_SPLIT).min(self.params.Nr);
+                tasks.push(tokio::spawn(Self::calculate_Energy(ArgsForEnergy {
+                    left,
+                    right,
+                    field: self.field.as_ptr(),
+                    impulse: self.impulse.as_ptr(),
+                    next_field: self.next_field.as_ptr(),
+                    params: &self.params as *const Parameters,
+                })));
+            }
 
-            tasks.push(tokio::spawn(Self::calculate_Energy(ArgsForEnergy {
-                left,
-                right,
-                field: self.field.as_ptr(),
-                impulse: self.impulse.as_ptr(),
-                next_field: self.next_field.as_ptr(),
-                params: &self.params as *const Parameters,
-            })));
+            for task in tasks {
+                let result = task.await.unwrap();
+                current_energy += result;
+            }
+            self.physics.Energy.push(current_energy);
         }
-
-        for task in tasks {
-            let result = task.await.unwrap();
-            current_energy += result;
-        }
-        self.physics.Energy[time_index] = current_energy;
-
         std::mem::swap(&mut self.field, &mut self.next_field);
         std::mem::swap(&mut self.impulse, &mut self.next_impulse);
     }
@@ -604,14 +608,19 @@ fn main() {
 
         dr: 0.0,
         dt: 0.0,
+
+        energy_pulling_frequency: 1,
     }];
 
     let (sender, receiver) = tokio::sync::mpsc::channel(10000);
 
-    for i in 1..7u32 {
+    for i in 1..6u32 {
         params.push(params[0]);
         params[i as usize].Nr = (params[0].Nr - 1) * usize::pow(2, i) + 1;
         params[i as usize].Nt = (params[0].Nt - 1) * usize::pow(2, i) + 1;
+        if params[i as usize].Nr > 1000 {
+            params[i as usize].energy_pulling_frequency = 10;
+        }
     }
 
     let mut solutions = params
