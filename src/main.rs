@@ -1,13 +1,20 @@
 use std::{
-    sync::Arc,
+    fs::File,
+    io::BufWriter,
+    io::Read,
+    io::Write,
     time::{Duration, Instant},
 };
 
-use tokio::runtime::Builder;
+use tokio::{
+    runtime::Builder,
+    sync::mpsc::{Receiver, Sender},
+};
 
 use num_complex::Complex;
 
-const NUM_THREADS: usize = 2;
+const EXP_THREADS_SPLIT: usize = 6;
+const GLOBAL_NUM_THREADS: usize = 15;
 
 #[derive(Copy, Clone)]
 struct Parameters {
@@ -65,11 +72,12 @@ struct Solution {
     next_impulse: Vec<Complex<f64>>,
 
     params: Parameters,
+    sender: Sender<DumpElement>,
 }
 
 impl Solution {
     // constructor
-    pub fn new(params: Parameters) -> Self {
+    pub fn new(params: Parameters, sender: Sender<DumpElement>) -> Self {
         let next_field = vec![Complex::new(0.0, 0.0); params.Nr];
         let next_impulse = vec![Complex::new(0.0, 0.0); params.Nr];
         let (field, impulse) = Solution::initialize_conditions(&params);
@@ -79,6 +87,7 @@ impl Solution {
             impulse,
             next_impulse,
             params,
+            sender,
         }
     }
 
@@ -229,9 +238,9 @@ impl Solution {
     // function does one time step, returns vectors of new impulse and field rows
     async fn step(&mut self) {
         let mut tasks = Vec::new();
-        for i in 0..NUM_THREADS {
-            let left = i * self.params.Nr / NUM_THREADS;
-            let right = ((i + 1) * self.params.Nr / NUM_THREADS).min(self.params.Nr);
+        for i in 0..EXP_THREADS_SPLIT {
+            let left = i * self.params.Nr / EXP_THREADS_SPLIT;
+            let right = ((i + 1) * self.params.Nr / EXP_THREADS_SPLIT).min(self.params.Nr);
 
             tasks.push(tokio::spawn(Self::calculate_field(ArgsForField {
                 left,
@@ -249,9 +258,9 @@ impl Solution {
 
         let mut tasks = Vec::new();
 
-        for i in 0..NUM_THREADS {
-            let left = i * self.params.Nr / NUM_THREADS;
-            let right = ((i + 1) * self.params.Nr / NUM_THREADS).min(self.params.Nr);
+        for i in 0..EXP_THREADS_SPLIT {
+            let left = i * self.params.Nr / EXP_THREADS_SPLIT;
+            let right = ((i + 1) * self.params.Nr / EXP_THREADS_SPLIT).min(self.params.Nr);
 
             tasks.push(tokio::spawn(Self::calculate_impulse(ArgsForImpulse {
                 left,
@@ -277,27 +286,77 @@ impl Solution {
         let t = Instant::now();
 
         for i in 0..self.params.Nt {
-            println!("{}", i);
-            println!("{:?}", self.field);
+            //println!("{}", i);
+            //println!("{:?}", self.field);
+            //if i % 1000 == 0 {
+            //    println!("step {}", i);
+            //}
             self.step().await;
         }
 
+        self.sender
+            .send(DumpElement {
+                task_id: self.params.Nr,
+                number: self.field[0],
+                terminate: false,
+            })
+            .await
+            .unwrap();
+
         //println!("{:?}", self.field);
-        println!("Elapsed: {}s", t.elapsed().as_secs_f64());
+        println!("Thread elapsed: {}s", t.elapsed().as_secs_f64());
     }
 }
 unsafe impl Send for Solution {}
 
+fn build_solution(mut params: Parameters, sender: Sender<DumpElement>) -> Solution {
+    params.dr = (params.Lr - params.R0) / (params.Nr as f64 - 1.0);
+    params.dt = (params.Lt - params.T0) / (params.Nt as f64 - 1.0);
+
+    Solution::new(params, sender)
+}
+
+struct DumpElement {
+    task_id: usize,
+    number: Complex<f64>,
+    terminate: bool,
+}
+impl DumpElement {
+    fn terminate() -> Self {
+        Self {
+            task_id: 0,
+            number: Complex::i(),
+            terminate: true,
+        }
+    }
+}
+
+async fn info_writer(mut receiver: Receiver<DumpElement>) {
+    let mut output_file = BufWriter::new(File::create("output.txt").unwrap());
+
+    while let Some(info) = receiver.recv().await {
+        if info.terminate {
+            return;
+        }
+
+        writeln!(
+            &mut output_file,
+            "task_id: {}, number: {}",
+            info.task_id, info.number
+        )
+        .unwrap();
+    }
+}
+
 fn main() {
     let runtime = Builder::new_multi_thread()
-        .worker_threads(NUM_THREADS)
-        .thread_keep_alive(Duration::from_secs(5))
+        .worker_threads(GLOBAL_NUM_THREADS)
         .build()
         .unwrap();
 
-    let mut params = Parameters {
-        Nr: 17,
-        Nt: 65,
+    let mut params = vec![Parameters {
+        Nr: 65,
+        Nt: 257,
 
         R0: 0.0, //change boundary conditions for non-zero R0
         Lr: 4.0,
@@ -320,11 +379,33 @@ fn main() {
 
         dr: 0.0,
         dt: 0.0,
-    };
-    params.dr = (params.Lr - params.R0) / (params.Nr as f64 - 1.0);
-    params.dt = (params.Lt - params.T0) / (params.Nt as f64 - 1.0);
+    }];
 
-    let mut solution = Solution::new(params);
+    let (sender, receiver) = tokio::sync::mpsc::channel(10000);
 
-    runtime.block_on(solution.calculate());
+    for i in 1..10u32 {
+        params.push(params[0]);
+        params[i as usize].Nr = (params[0].Nr - 1) * usize::pow(2, i) + 1;
+        params[i as usize].Nt = (params[0].Nt - 1) * usize::pow(2, i) + 1;
+    }
+
+    let mut solutions = params
+        .into_iter()
+        .map(|p| build_solution(p, sender.clone()))
+        .collect::<Vec<_>>();
+
+    let t = Instant::now();
+
+    runtime.block_on(async move {
+        futures::join!(
+            async {
+                futures::future::join_all(solutions.iter_mut().map(|s| s.calculate())).await;
+
+                sender.send(DumpElement::terminate()).await.unwrap();
+            },
+            info_writer(receiver),
+        );
+    });
+
+    println!("Total elapsed: {}", t.elapsed().as_secs_f64());
 }
