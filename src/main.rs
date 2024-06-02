@@ -70,9 +70,9 @@ struct Solution {
 impl Solution {
     // constructor
     pub fn new(params: Parameters) -> Self {
-        let field = vec![Complex::new(0.0, 0.0); params.Nr];
-        let impulse = vec![Complex::new(0.0, 0.0); params.Nr];
-        let (next_field, next_impulse) = Solution::initialize_conditions(&params);
+        let next_field = vec![Complex::new(0.0, 0.0); params.Nr];
+        let next_impulse = vec![Complex::new(0.0, 0.0); params.Nr];
+        let (field, impulse) = Solution::initialize_conditions(&params);
         Solution {
             field,
             next_field,
@@ -90,7 +90,7 @@ impl Solution {
         let mut r: f64;
         for i in 0..params.Nr {
             r = params.R0 + params.dr * i as f64 + params.T0;
-            field[i] = Complex::i() * params.alpha * params.ampl * f64::cos(params.k * r)
+            field[i] = Complex::new(0.0, 1.0) * params.alpha * params.ampl * f64::cos(params.k * r)
                 + params.ampl * f64::sin(params.k * r);
             field[i] /= 1.0 + f64::exp(-params.a1 * (r - params.r1));
             field[i] /= 1.0 + f64::exp(-params.a2 * (params.r2 - r));
@@ -106,21 +106,25 @@ impl Solution {
         for i in 0..params.Nr {
             r = params.R0 + params.dr * i as f64 + params.T0 + params.dt / 2.0;
 
-            pi1 = (Complex::i() * params.alpha * params.ampl * f64::cos(params.k * r)
+            pi1 = (Complex::new(0.0, 1.0) * params.alpha * params.ampl * f64::cos(params.k * r)
                 + params.ampl * f64::sin(params.k * r))
                 * params.a1;
             pi1 *= f64::exp(-params.a1 * (r - params.r1));
             pi1 /= f64::powf(1.0 + f64::exp(-params.a1 * (r - params.r1)), 2.0);
             pi1 /= 1.0 + f64::exp(-params.a2 * (params.r2 - r));
 
-            pi2 = -(Complex::i() * params.alpha * params.ampl * f64::cos(params.k * r)
+            pi2 = -(Complex::new(0.0, 1.0) * params.alpha * params.ampl * f64::cos(params.k * r)
                 + params.ampl * f64::sin(params.k * r))
                 * params.a2;
             pi2 *= f64::exp(-params.a2 * (params.r2 - r));
             pi2 /= 1.0 + f64::exp(-params.a1 * (r - params.r1));
             pi2 /= f64::powf(1.0 + f64::exp(-params.a2 * (params.r2 - r)), 2.0);
 
-            pi3 = -Complex::i() * params.alpha * params.ampl * params.k * f64::sin(params.k * r)
+            pi3 = -Complex::new(0.0, 1.0)
+                * params.alpha
+                * params.ampl
+                * params.k
+                * f64::sin(params.k * r)
                 + params.ampl * params.k * f64::cos(params.k * r);
             pi3 /= 1.0 + f64::exp(-params.a1 * (r - params.r1));
             pi3 /= 1.0 + f64::exp(-params.a2 * (params.r2 - r));
@@ -157,24 +161,26 @@ impl Solution {
         if index == 0 {
             field_pp = 2.0 * (field_right - field_center) / f64::powf(params.dr, 2.0);
             out_impulse = impulse;
-            out_impulse +=
-                (params.Dimensions * field_pp - f64::powf(params.Mass, 2.0)) * field_center;
-            out_impulse -= params.Lambda * field_center.powc(Complex::new(3.0, 0.0));
+            out_impulse += (params.Dimensions * field_pp
+                - f64::powf(params.Mass, 2.0) * field_center)
+                * params.dt;
+            out_impulse -= params.Lambda * field_center.powc(Complex::new(3.0, 0.0)) * params.dt;
         } else if index == params.Nr - 1 {
             field_pp = 2.0 * (field_left - field_center) / f64::powf(params.dr, 2.0);
             out_impulse = impulse;
-            out_impulse += (field_pp - f64::powf(params.Mass, 2.0)) * field_center;
-            out_impulse -= params.Lambda * field_center.powc(Complex::new(3.0, 0.0));
+            out_impulse += (field_pp - f64::powf(params.Mass, 2.0) * field_center) * params.dt;
+            out_impulse -= params.Lambda * field_center.powc(Complex::new(3.0, 0.0)) * params.dt;
         } else {
             field_pp = (field_right - 2.0 * field_center + field_left) / f64::powf(params.dr, 2.0);
             field_p = (field_right - field_left) / 2.0 / params.dr;
             out_impulse = impulse;
             out_impulse += (field_pp
-                + (params.Dimensions - 1.0) * field_p / (params.R0 + (index as f64) * params.dr)
-                - f64::powf(params.Mass, 2.0))
-                * field_center;
-            out_impulse -= params.Lambda * field_center.powc(Complex::new(3.0, 0.0));
+                + (params.Dimensions - 1.0) * field_p / (params.R0 + (index as f64) * params.dr))
+                * params.dt;
+            out_impulse -= f64::powf(params.Mass, 2.0) * field_center * params.dt;
+            out_impulse -= params.Lambda * field_center.powc(Complex::new(3.0, 0.0)) * params.dt;
         }
+
         out_impulse
     }
 
@@ -250,7 +256,7 @@ impl Solution {
             tasks.push(tokio::spawn(Self::calculate_impulse(ArgsForImpulse {
                 left,
                 right,
-                field: self.field.as_ptr(),
+                field: self.next_field.as_ptr(),
                 impulse: self.impulse.as_ptr(),
                 out_impulse: self.next_impulse.as_ptr() as *mut Complex<f64>,
                 params: &self.params as *const Parameters,
@@ -270,14 +276,13 @@ impl Solution {
     async fn calculate(&mut self) {
         let t = Instant::now();
 
-        for _ in 0..self.params.Nt {
+        for i in 0..self.params.Nt {
+            println!("{}", i);
+            println!("{:?}", self.field);
             self.step().await;
         }
 
-        // println!("{:?}", self.field);
-        // println!("{:?}", self.impulse);
-        // println!("{}", field[0]);
-
+        //println!("{:?}", self.field);
         println!("Elapsed: {}s", t.elapsed().as_secs_f64());
     }
 }
@@ -291,8 +296,8 @@ fn main() {
         .unwrap();
 
     let mut params = Parameters {
-        Nr: 11,
-        Nt: 41,
+        Nr: 17,
+        Nt: 65,
 
         R0: 0.0, //change boundary conditions for non-zero R0
         Lr: 4.0,
@@ -307,9 +312,9 @@ fn main() {
 
         r1: 1.5,
         a1: 10.0,
-        r2: 2.1,
+        r2: 2.5,
         a2: 10.0,
-        k: 2.0 * std::f64::consts::PI / 0.2,
+        k: 2.0 * std::f64::consts::PI / 1.0,
 
         ampl: 1.0,
 
