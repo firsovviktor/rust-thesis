@@ -1,8 +1,7 @@
 use std::{
+    fmt::format,
     fs::File,
-    io::BufWriter,
-    io::Read,
-    io::Write,
+    io::{BufWriter, Read, Write},
     time::{Duration, Instant},
 };
 
@@ -17,6 +16,7 @@ use statrs::statistics::Statistics;
 const GLOBAL_NUM_THREADS: usize = 64;
 const EXP_THREADS_SPLIT: usize = 4;
 const EXP_ENERGY_THREADS_SPLIT: usize = 16;
+const OUTPUT_FILES_DIR: &str = "output_files";
 
 #[derive(Copy, Clone)]
 struct Parameters {
@@ -121,22 +121,16 @@ impl Solution {
             Energy: vec![],
         };
 
-        let out_filename = [
-            "Nr".to_string(),
-            params.Nr.to_string(),
-            "Nt".to_string(),
-            params.Nt.to_string(),
-            "alpha".to_string(),
-            params.alpha.to_string(),
-            "Dimensions".to_string(),
-            params.Dimensions.to_string(),
-        ]
-        .join("_");
+        let out_filename = format!(
+            "{}/Nr_{}_Nt_{}_alpha_{}_Dimensions_{}.txt",
+            OUTPUT_FILES_DIR, params.Nr, params.Nt, params.alpha, params.Dimensions
+        );
         let mut output_file = BufWriter::new(File::create(out_filename).unwrap());
         writeln!(
             &mut output_file,
-            "t, r, field, impulse, next_field, next_impulse"
-        );
+            "t r field impulse next_field next_impulse"
+        )
+        .unwrap();
 
         Solution {
             field,
@@ -552,17 +546,10 @@ impl Solution {
 
         self.sender
             .send(DumpElement {
-                task_id: [
-                    "Nr".to_string(),
-                    self.params.Nr.to_string(),
-                    "Nt".to_string(),
-                    self.params.Nt.to_string(),
-                    "alpha".to_string(),
-                    self.params.alpha.to_string(),
-                    "Dimensions".to_string(),
-                    self.params.Dimensions.to_string(),
-                ]
-                .join("_"),
+                task_id: format!(
+                    "Nr_{}_Nt_{}_alpha_{}_Dimensions_{}",
+                    self.params.Nr, self.params.Nt, self.params.alpha, self.params.Dimensions
+                ),
                 Action: self.physics.Action,
                 Energy: mean_energy,
                 Energy_std: (self
@@ -610,8 +597,10 @@ impl DumpElement {
     }
 }
 
-async fn info_writer(mut receiver: Receiver<DumpElement>) {
+async fn info_writer(mut receiver: Receiver<DumpElement>, total_solutions_count: usize) {
     let mut output_file = BufWriter::new(File::create("output.txt").unwrap());
+
+    let mut completed_solutions = 0;
 
     while let Some(info) = receiver.recv().await {
         if info.terminate {
@@ -624,6 +613,14 @@ async fn info_writer(mut receiver: Receiver<DumpElement>) {
             info.task_id, info.Action, info.Energy, info.Energy_std
         )
         .unwrap();
+
+        completed_solutions += 1;
+        println!(
+            "Completed: {}/{} ({}%)",
+            completed_solutions,
+            total_solutions_count,
+            (completed_solutions * 100) as f64 / total_solutions_count as f64
+        );
     }
 }
 
@@ -632,6 +629,8 @@ fn main() {
         .worker_threads(GLOBAL_NUM_THREADS)
         .build()
         .unwrap();
+
+    std::fs::create_dir_all(OUTPUT_FILES_DIR).unwrap();
 
     let mut params = vec![];
     let mut sample_param = Parameters {
@@ -709,10 +708,14 @@ fn main() {
         }
     }
 
+    println!("Total tasks: {}", params.len());
+
     let mut solutions = params
         .into_iter()
         .map(|p| build_solution(p, sender.clone()))
         .collect::<Vec<_>>();
+
+    let solutions_len = solutions.len();
 
     let t = Instant::now();
 
@@ -723,7 +726,7 @@ fn main() {
 
                 sender.send(DumpElement::terminate()).await.unwrap();
             },
-            info_writer(receiver),
+            info_writer(receiver, solutions_len),
         );
     });
 
