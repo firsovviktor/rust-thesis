@@ -14,7 +14,7 @@ use tokio::{
 use num_complex::Complex;
 use statrs::statistics::Statistics;
 
-const GLOBAL_NUM_THREADS: usize = 16;
+const GLOBAL_NUM_THREADS: usize = 64;
 const EXP_THREADS_SPLIT: usize = 4;
 const EXP_ENERGY_THREADS_SPLIT: usize = 16;
 
@@ -46,6 +46,9 @@ struct Parameters {
     pub dt: f64,
 
     pub energy_pulling_frequency: usize,
+
+    pub base_Nr: usize,
+    pub base_Nt: usize,
 }
 
 struct ArgsForField {
@@ -103,6 +106,8 @@ struct Solution {
 
     params: Parameters,
     sender: Sender<DumpElement>,
+
+    output_file: BufWriter<File>,
 }
 
 impl Solution {
@@ -115,6 +120,24 @@ impl Solution {
             Action: Complex::new(0.0, 0.0),
             Energy: vec![],
         };
+
+        let out_filename = [
+            "Nr".to_string(),
+            params.Nr.to_string(),
+            "Nt".to_string(),
+            params.Nt.to_string(),
+            "alpha".to_string(),
+            params.alpha.to_string(),
+            "Dimensions".to_string(),
+            params.Dimensions.to_string(),
+        ]
+        .join("_");
+        let mut output_file = BufWriter::new(File::create(out_filename).unwrap());
+        writeln!(
+            &mut output_file,
+            "r, t, field, impulse, next_field, next_impulse"
+        );
+
         Solution {
             field,
             next_field,
@@ -123,6 +146,7 @@ impl Solution {
             physics,
             params,
             sender,
+            output_file,
         }
     }
 
@@ -487,6 +511,24 @@ impl Solution {
             }
             self.physics.Energy.push(current_energy);
         }
+
+        let scale: usize = (self.params.Nt - 1) / (self.params.base_Nt - 1);
+        if time_index % (scale) == 0 {
+            for i in 0..self.params.base_Nr {
+                writeln!(
+                    &mut self.output_file,
+                    "{} {} {} {} {} {}",
+                    self.params.R0 + ((i * scale) as f64) * self.params.dr,
+                    self.params.T0 + (time_index as f64) * self.params.dt,
+                    self.field[i * scale],
+                    self.impulse[i * scale],
+                    self.next_field[i * scale],
+                    self.next_impulse[i * scale]
+                )
+                .unwrap();
+            }
+        }
+
         std::mem::swap(&mut self.field, &mut self.next_field);
         std::mem::swap(&mut self.impulse, &mut self.next_impulse);
     }
@@ -497,11 +539,6 @@ impl Solution {
         let t = Instant::now();
 
         for i in 0..self.params.Nt {
-            //println!("{}", i);
-            //println!("{:?}", self.field);
-            //if i % 1000 == 0 {
-            //    println!("step {}", i);
-            //}
             self.step(i).await;
         }
 
@@ -512,7 +549,17 @@ impl Solution {
 
         self.sender
             .send(DumpElement {
-                task_id: self.params.Nr.to_string(),
+                task_id: [
+                    "Nr".to_string(),
+                    self.params.Nr.to_string(),
+                    "Nt".to_string(),
+                    self.params.Nt.to_string(),
+                    "alpha".to_string(),
+                    self.params.alpha.to_string(),
+                    "Dimensions".to_string(),
+                    self.params.Dimensions.to_string(),
+                ]
+                .join("_"),
                 Action: self.physics.Action,
                 Energy: mean_energy,
                 Energy_std: (self
@@ -583,7 +630,8 @@ fn main() {
         .build()
         .unwrap();
 
-    let mut params = vec![Parameters {
+    let mut params = vec![];
+    let mut sample_param = Parameters {
         Nr: 65,
         Nt: 257,
 
@@ -610,16 +658,47 @@ fn main() {
         dt: 0.0,
 
         energy_pulling_frequency: 1,
-    }];
+
+        base_Nr: 33,
+        base_Nt: 129,
+    };
 
     let (sender, receiver) = tokio::sync::mpsc::channel(10000);
 
-    for i in 1..6u32 {
-        params.push(params[0]);
-        params[i as usize].Nr = (params[0].Nr - 1) * usize::pow(2, i) + 1;
-        params[i as usize].Nt = (params[0].Nt - 1) * usize::pow(2, i) + 1;
-        if params[i as usize].Nr > 1000 {
-            params[i as usize].energy_pulling_frequency = 10;
+    let vec_Nr = [
+        (sample_param.base_Nr as i32 - 1) * 2i32.pow(0) + 1,
+        (sample_param.base_Nr as i32 - 1) * 2i32.pow(1) + 1,
+        (sample_param.base_Nr as i32 - 1) * 2i32.pow(2) + 1,
+        (sample_param.base_Nr as i32 - 1) * 2i32.pow(3) + 1,
+        (sample_param.base_Nr as i32 - 1) * 2i32.pow(4) + 1,
+        (sample_param.base_Nr as i32 - 1) * 2i32.pow(5) + 1,
+        (sample_param.base_Nr as i32 - 1) * 2i32.pow(6) + 1,
+        (sample_param.base_Nr as i32 - 1) * 2i32.pow(7) + 1,
+        (sample_param.base_Nr as i32 - 1) * 2i32.pow(8) + 1,
+        (sample_param.base_Nr as i32 - 1) * 2i32.pow(9) + 1,
+        (sample_param.base_Nr as i32 - 1) * 2i32.pow(10) + 1,
+    ];
+    let vec_alpha = [
+        -2.5, -2.0, -1.5, -1.2, -1.0, -0.9, -0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, -0.0,
+        2.5, 2.0, 1.5, 1.2, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1,
+    ];
+    let vec_Dimensions = [
+        0.0, 0.5, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.8, 2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 3.5, 4.0,
+        4.5, 5.0, 6.0, 8.0,
+    ];
+
+    for Dimensions in vec_Dimensions {
+        for alpha in vec_alpha {
+            for Nr in vec_Nr {
+                sample_param.Nr = Nr as usize;
+                sample_param.Nt = (4 * (Nr - 1) + 1) as usize;
+                sample_param.alpha = alpha;
+                sample_param.Dimensions = Dimensions;
+                if Nr > 1000 {
+                    sample_param.energy_pulling_frequency = 10;
+                }
+                params.push(sample_param);
+            }
         }
     }
 
