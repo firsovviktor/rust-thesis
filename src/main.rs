@@ -560,13 +560,14 @@ impl Solution {
                     .sum::<f64>()
                     / (self.physics.Energy.len() as f64 - 1.0))
                     .powf(0.5),
+                elapsed: Some(t.elapsed()),
                 terminate: false,
             })
             .await
             .unwrap();
 
         //println!("{:?}", self.field);
-        println!("Thread elapsed: {}s", t.elapsed().as_secs_f64());
+        // println!("Thread elapsed: {}s", t.elapsed().as_secs_f64());
     }
 }
 unsafe impl Send for Solution {}
@@ -583,6 +584,7 @@ struct DumpElement {
     Action: Complex<f64>,
     Energy: Complex<f64>,
     Energy_std: f64,
+    elapsed: Option<Duration>,
     terminate: bool,
 }
 impl DumpElement {
@@ -592,6 +594,7 @@ impl DumpElement {
             Action: Complex::i(),
             Energy: Complex::i(),
             Energy_std: 0.0,
+            elapsed: None,
             terminate: true,
         }
     }
@@ -616,10 +619,12 @@ async fn info_writer(mut receiver: Receiver<DumpElement>, total_solutions_count:
 
         completed_solutions += 1;
         println!(
-            "Completed: {}/{} ({}%)",
+            "Completed: {}/{} ({}%). Completed task: {}. Elapsed: {}s",
             completed_solutions,
             total_solutions_count,
-            (completed_solutions * 100) as f64 / total_solutions_count as f64
+            (completed_solutions * 100) as f64 / total_solutions_count as f64,
+            info.task_id,
+            info.elapsed.unwrap().as_secs_f64()
         );
     }
 }
