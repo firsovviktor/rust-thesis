@@ -13,9 +13,9 @@ use tokio::{
 use num_complex::Complex;
 use statrs::statistics::Statistics;
 
-const GLOBAL_NUM_THREADS: usize = 64;
-const EXP_THREADS_SPLIT: usize = 4;
-const EXP_ENERGY_THREADS_SPLIT: usize = 16;
+const GLOBAL_NUM_THREADS: usize = 14;
+const EXP_THREADS_SPLIT: usize = 2;
+const EXP_ENERGY_THREADS_SPLIT: usize = 7;
 const OUTPUT_FILES_DIR: &str = "output_files";
 
 #[derive(Copy, Clone)]
@@ -128,7 +128,7 @@ impl Solution {
         let mut output_file = BufWriter::new(File::create(out_filename).unwrap());
         writeln!(
             &mut output_file,
-            "t r field impulse next_field next_impulse"
+            "t r field_re field_im impulse_re impulse_im next_field_re next_field_im next_impulse_re next_impulse_im"
         )
         .unwrap();
 
@@ -514,13 +514,17 @@ impl Solution {
             for i in 0..self.params.base_Nr {
                 writeln!(
                     &mut self.output_file,
-                    "{} {} {} {} {} {}",
+                    "{} {} {} {} {} {} {} {} {} {}",
                     self.params.T0 + (time_index as f64) * self.params.dt,
                     self.params.R0 + ((i * scale) as f64) * self.params.dr,
-                    self.field[i * scale],
-                    self.impulse[i * scale],
-                    self.next_field[i * scale],
-                    self.next_impulse[i * scale]
+                    self.field[i * scale].re,
+                    self.field[i * scale].im,
+                    self.impulse[i * scale].re,
+                    self.impulse[i * scale].im,
+                    self.next_field[i * scale].re,
+                    self.next_field[i * scale].im,
+                    self.next_impulse[i * scale].re,
+                    self.next_impulse[i * scale].im
                 )
                 .unwrap();
             }
@@ -681,17 +685,17 @@ fn main() {
         (sample_param.base_Nr as i32 - 1) * 2i32.pow(10) + 1,
     ];
     let vec_alpha = [
-        -2.5, -2.0, -1.5, -1.2, -1.0, -0.9, -0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, 0.0,
-        2.5, 2.0, 1.5, 1.2, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1,
+        0.1, //-2.5, -2.0, -1.5, -1.2, -1.0, -0.9, -0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, 0.0,
+            //2.5, 2.0, 1.5, 1.2, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1,
     ];
     let vec_Dimensions = [
-        0.0, 0.5, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.8, 2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 3.5, 4.0,
-        4.5, 5.0, 6.0, 8.0,
+        3.0, //0.0, 0.5, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.8, 2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 3.5, 4.0,
+            //4.5, 5.0, 6.0, 8.0,
     ];
 
     //expecting 7018+1 files 750 kB each
     //total size ~5.2 GB
-    //total expected worktime on a 64-core CPU ~4.2 hours
+    //total expected worktime on a 8C/16T CPU ~16.7 hours
 
     for Dimensions in vec_Dimensions {
         for alpha in vec_alpha {
