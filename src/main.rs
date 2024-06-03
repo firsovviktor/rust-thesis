@@ -135,7 +135,7 @@ impl Solution {
         let mut output_file = BufWriter::new(File::create(out_filename).unwrap());
         writeln!(
             &mut output_file,
-            "r, t, field, impulse, next_field, next_impulse"
+            "t, r, field, impulse, next_field, next_impulse"
         );
 
         Solution {
@@ -513,13 +513,16 @@ impl Solution {
         }
 
         let scale: usize = (self.params.Nt - 1) / (self.params.base_Nt - 1);
+        //if self.params.Nr == 33 {
+        //    println!("sc {}, Nr {}, Nt {}", scale, self.params.Nr, self.params.Nt);
+        //}
         if time_index % (scale) == 0 {
             for i in 0..self.params.base_Nr {
                 writeln!(
                     &mut self.output_file,
                     "{} {} {} {} {} {}",
-                    self.params.R0 + ((i * scale) as f64) * self.params.dr,
                     self.params.T0 + (time_index as f64) * self.params.dt,
+                    self.params.R0 + ((i * scale) as f64) * self.params.dr,
                     self.field[i * scale],
                     self.impulse[i * scale],
                     self.next_field[i * scale],
@@ -679,13 +682,17 @@ fn main() {
         (sample_param.base_Nr as i32 - 1) * 2i32.pow(10) + 1,
     ];
     let vec_alpha = [
-        -2.5, -2.0, -1.5, -1.2, -1.0, -0.9, -0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, -0.0,
+        -2.5, -2.0, -1.5, -1.2, -1.0, -0.9, -0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, 0.0,
         2.5, 2.0, 1.5, 1.2, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1,
     ];
     let vec_Dimensions = [
         0.0, 0.5, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.8, 2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 3.5, 4.0,
         4.5, 5.0, 6.0, 8.0,
     ];
+
+    //expecting 7018+1 files 750 kB each
+    //total size ~5.2 GB
+    //total expected worktime on a 64-core CPU ~4.2 hours
 
     for Dimensions in vec_Dimensions {
         for alpha in vec_alpha {
