@@ -128,7 +128,7 @@ impl Solution {
         let mut output_file = BufWriter::new(File::create(out_filename).unwrap());
         writeln!(
             &mut output_file,
-            "t r field_re field_im impulse_re impulse_im next_field_re next_field_im next_impulse_re next_impulse_im"
+            "t r field_re field_im impulse_re impulse_im"
         )
         .unwrap();
 
@@ -514,17 +514,13 @@ impl Solution {
             for i in 0..self.params.base_Nr {
                 writeln!(
                     &mut self.output_file,
-                    "{} {} {} {} {} {} {} {} {} {}",
+                    "{} {} {} {} {} {}",
                     self.params.T0 + (time_index as f64) * self.params.dt,
                     self.params.R0 + ((i * scale) as f64) * self.params.dr,
                     self.field[i * scale].re,
                     self.field[i * scale].im,
                     self.impulse[i * scale].re,
-                    self.impulse[i * scale].im,
-                    self.next_field[i * scale].re,
-                    self.next_field[i * scale].im,
-                    self.next_impulse[i * scale].re,
-                    self.next_impulse[i * scale].im
+                    self.impulse[i * scale].im
                 )
                 .unwrap();
             }
@@ -685,9 +681,9 @@ fn main() {
         (sample_param.base_Nr as i32 - 1) * 2i32.pow(5) + 1,
         (sample_param.base_Nr as i32 - 1) * 2i32.pow(6) + 1,
         (sample_param.base_Nr as i32 - 1) * 2i32.pow(7) + 1,
-        //(sample_param.base_Nr as i32 - 1) * 2i32.pow(8) + 1,
-        //(sample_param.base_Nr as i32 - 1) * 2i32.pow(9) + 1,
-        //(sample_param.base_Nr as i32 - 1) * 2i32.pow(10) + 1,
+        (sample_param.base_Nr as i32 - 1) * 2i32.pow(8) + 1,
+        (sample_param.base_Nr as i32 - 1) * 2i32.pow(9) + 1,
+        (sample_param.base_Nr as i32 - 1) * 2i32.pow(10) + 1,
     ];
     let vec_alpha = [
         -2.5, -2.0, -1.5, -1.2, -1.0, -0.9, -0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, 0.0,
