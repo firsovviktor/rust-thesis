@@ -8,7 +8,9 @@ from os.path import isfile, join
 
 mypath = "./output_files"
 in_fname_list = [mypath+"/"+f for f in listdir(mypath) if isfile(join(mypath, f))]
-data_dict = dict()
+
+data_dict = dict() #change later
+data = []
 
 x = 1
 for in_fname in in_fname_list:
@@ -33,6 +35,7 @@ for in_fname in in_fname_list:
     new_dict["next_impulse_re"] = ff_arr[6]
     new_dict["next_impulse_im"] = ff_arr[7]
 
+    data.append(new_dict) #change later
     data_dict[int(Nr)] = new_dict
 
 print("entries")

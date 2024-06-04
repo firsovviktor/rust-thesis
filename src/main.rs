@@ -616,8 +616,8 @@ async fn info_writer(mut receiver: Receiver<DumpElement>, total_solutions_count:
 
         writeln!(
             &mut output_file,
-            "task_id: {}, Action: {}, Energy: {}, Energy_std: {}",
-            info.task_id, info.Action, info.Energy, info.Energy_std
+            "task_id: {}, Action_re: {}, Action_im: {}, Energy_re: {}, Energy_im: {}, Energy_std: {}",
+            info.task_id, info.Action.re, info.Action.im, info.Energy.re, info.Energy.im, info.Energy_std
         )
         .unwrap();
 
@@ -685,17 +685,17 @@ fn main() {
         (sample_param.base_Nr as i32 - 1) * 2i32.pow(5) + 1,
         (sample_param.base_Nr as i32 - 1) * 2i32.pow(6) + 1,
         (sample_param.base_Nr as i32 - 1) * 2i32.pow(7) + 1,
-        (sample_param.base_Nr as i32 - 1) * 2i32.pow(8) + 1,
-        (sample_param.base_Nr as i32 - 1) * 2i32.pow(9) + 1,
-        (sample_param.base_Nr as i32 - 1) * 2i32.pow(10) + 1,
+        //(sample_param.base_Nr as i32 - 1) * 2i32.pow(8) + 1,
+        //(sample_param.base_Nr as i32 - 1) * 2i32.pow(9) + 1,
+        //(sample_param.base_Nr as i32 - 1) * 2i32.pow(10) + 1,
     ];
     let vec_alpha = [
-        0.1, //-2.5, -2.0, -1.5, -1.2, -1.0, -0.9, -0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, 0.0,
-            //2.5, 2.0, 1.5, 1.2, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1,
+        -2.5, -2.0, -1.5, -1.2, -1.0, -0.9, -0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, 0.0,
+        2.5, 2.0, 1.5, 1.2, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1,
     ];
     let vec_Dimensions = [
-        3.0, //0.0, 0.5, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.8, 2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 3.5, 4.0,
-            //4.5, 5.0, 6.0, 8.0,
+        0.0, 0.5, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.8, 2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 3.5, 4.0,
+        4.5, 5.0, 6.0, 8.0,
     ];
 
     //expecting 7018+1 files 750 kB each
