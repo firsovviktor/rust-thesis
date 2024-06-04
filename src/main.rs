@@ -536,7 +536,7 @@ impl Solution {
 
     // function repeatedly calucaltes new rows and stores them in place of the old ones
     // also gives opprtunity to caltucalte signatures and store values
-    async fn calculate(&mut self) {
+    async fn calculate(mut self) {
         let t = Instant::now();
 
         for i in 0..self.params.Nt {
@@ -731,7 +731,10 @@ fn main() {
     runtime.block_on(async move {
         futures::join!(
             async {
-                futures::future::join_all(solutions.iter_mut().map(|s| s.calculate())).await;
+                futures::future::join_all(
+                    solutions.into_iter().map(|s| tokio::spawn(s.calculate())),
+                )
+                .await;
 
                 sender.send(DumpElement::terminate()).await.unwrap();
             },
